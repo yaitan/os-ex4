@@ -3,11 +3,22 @@
 //
 #include "VirtualMemory.h"
 
-void translate(uint64_t virtualAddress, int* arr)
-// 1001 1001 1001 1001 1001
+/**
+ * Translates a virtual memory address into an array of page indexes.
+ * @param virtualAddress Virtual memory address.
+ * @param arr Array of size TABLES_DEPTH + 1 in which the indexes will be stored.
+ */
+void translate(uint64_t virtualAddress, unsigned int* arr)
 {
-  size_t first = TABLES_DEPTH * OFFSET_WIDTH;
-  size_t b = 1LL << first;
+  uint64_t exponent = TABLES_DEPTH * OFFSET_WIDTH;
+  uint64_t divider = 1LL << exponent;
+  for (int i = 0; i < TABLES_DEPTH + 1; ++i)
+  {
+    uint64_t remainder = virtualAddress % divider;
+    arr[i] = virtualAddress / divider;
+    virtualAddress = remainder;
+    divider = divider >> OFFSET_WIDTH;
+  }
 }
 
 
