@@ -4,6 +4,7 @@
 #include <exception>
 #include <cassert>
 #include <algorithm>
+#include <iostream>
 #include "VirtualMemory.h"
 
 typedef uint64_t addr_t;
@@ -103,7 +104,7 @@ int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
       maxFrame = std::max (maxFrame, nextFrame);
     }
   }
-  if (empty && layer != callFrame)
+  if (empty && startFrame != callFrame)
   {
     *newFrame = startFrame;
     return -1;
@@ -126,6 +127,7 @@ int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
   {
     empty_frame (newFrame);
   }
+  assert(newFrame < 64);
 
   PMwrite (pAddr, newFrame);
   *addr = newFrame;
@@ -135,6 +137,7 @@ int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
 /**
  * function extract from the page Table tree the physical address of the given
  * virtual Address.
+ * @note includes test prints
  * @param virtualAddress
  * @param pageAddress
  * @return 0 if fails, 1 else
@@ -143,6 +146,11 @@ int get_physical_address (addr_t virtualAddress, addr_t *physicalAddress, rw_t m
 {
   unsigned int translated[TABLES_DEPTH + 1];
   translate (virtualAddress, translated);
+  for (auto i: translated)
+  {
+    std::cout << i << " ";
+  }
+  std::cout << std::endl;
   addr_t pAddr;
   int frameIndex = 0;
   for (int i = 0; i < TABLES_DEPTH; i++)
@@ -157,8 +165,9 @@ int get_physical_address (addr_t virtualAddress, addr_t *physicalAddress, rw_t m
         return 0;
       }
     }
+    std::cout << frameIndex << " ";
   }
-
+  std::cout << std::endl;
   *physicalAddress = frameIndex * PAGE_SIZE + translated[TABLES_DEPTH];
   return 1;
 }
