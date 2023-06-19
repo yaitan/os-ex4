@@ -65,16 +65,19 @@ void empty_frame (int frameIndex)
  * Finds the earliest possible empty frame, and writes it into newFrame.
  * Returns a value based on the type of frame found.
  * Solved with recursion.
+ * If an empty table is found, it is removed from its parent table.
+ * If no empty table is found, newFrame will be equal to 1 + max frame found.
+ * @param callFrame Frame calling this function.
  * @param startFrame Starting frame of search. Should be 0 outside of recursion.
  * @param layer Current viewed layer in the hierarchy. Should be 0 outside of recursion.
  * @param newFrame Integer into which the index of the new frame is written.
- * @return Empty table = 0, new frame > 0, full = -1.
+ * @return Empty table = -1, new frame >= 0.
  */
-int find_empty_frame(int startFrame, int layer, int *newFrame)
+int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
 {
   int maxFrame = startFrame;
   int nextFrame, res;
-  int zeroCount = 0;
+  bool empty = true;
   addr_t frameAddr = startFrame * PAGE_SIZE;
   // Check entire frame
   for (int i = 0; i < PAGE_SIZE; ++i)
@@ -82,57 +85,51 @@ int find_empty_frame(int startFrame, int layer, int *newFrame)
     PMread (frameAddr + i, &nextFrame);
     if (nextFrame == 0)
     {
-      ++zeroCount;
       continue;
     }
-    if (layer < TABLES_DEPTH) // all frames are pointing to tables
+    empty = false;
+    if (layer < TABLES_DEPTH - 1) // all frames are pointing to tables
     {
-      res = find_empty_frame (nextFrame, layer + 1, newFrame);
-      switch (res)
+      res = find_empty_frame (callFrame, nextFrame, layer + 1, newFrame);
+      if (res == -1)
       {
-        case -1:
-          return -1;
-        case 0:
-          PMwrite (frameAddr + i, 0);
-          return 0;
-        default:
-          maxFrame = std::max(maxFrame, res);
-          if (maxFrame == NUM_FRAMES - 1)
-            return -1;
+        PMwrite (frameAddr + i, 0);
+        return -1;
       }
+      maxFrame = std::max (maxFrame, res); // res >= nextFrame
     }
     else // all frames are pointing to non-tables
     {
-      maxFrame = std::max(maxFrame, nextFrame);
-      if (maxFrame == NUM_FRAMES - 1)
-        return -1;
+      maxFrame = std::max (maxFrame, nextFrame);
     }
   }
-  if (zeroCount == PAGE_SIZE){
+  if (empty && layer != callFrame)
+  {
     *newFrame = startFrame;
-    return 0;
+    return -1;
   }
   *newFrame = maxFrame + 1;
   return maxFrame;
 }
 
-
-
-int empty_table_handler (int *addr, addr_t prevAddr, bool cleanFrame)
+int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
 {
   int newFrame;
-  int res = find_empty_frame (0, 0, &newFrame);
-  if (res == -1)
+  int res = find_empty_frame ((int) (pAddr / PAGE_SIZE), 0, 0, &newFrame);
+  if (newFrame == NUM_FRAMES)
   {
-    find_frame_to_switch (&newFrame);
-    switch_frames (&newFrame);
+    //find_frame_to_switch (&newFrame);
+    //switch_frames (&newFrame);
+    return 0;
   }
-  else if (res < 0 && cleanFrame){
+  else if (res != -1 && cleanFrame)
+  {
     empty_frame (newFrame);
   }
 
-  PMwrite (prevAddr, newFrame);
+  PMwrite (pAddr, newFrame);
   *addr = newFrame;
+  return 1;
 }
 
 /**
@@ -146,25 +143,20 @@ int get_physical_address (addr_t virtualAddress, addr_t *physicalAddress, rw_t m
 {
   unsigned int translated[TABLES_DEPTH + 1];
   translate (virtualAddress, translated);
-  addr_t prevAddr;
+  addr_t pAddr;
   int frameIndex = 0;
   for (int i = 0; i < TABLES_DEPTH; i++)
   {
-    prevAddr = frameIndex * PAGE_SIZE + translated[i];
-    PMread (prevAddr, &frameIndex);
+    pAddr = frameIndex * PAGE_SIZE + translated[i];
+    PMread (pAddr, &frameIndex);
     if (frameIndex == 0)
     {
       bool cleanFrame = i < TABLES_DEPTH - 1;
-      if (!empty_table_handler (&frameIndex, prevAddr, cleanFrame))
+      if (empty_table_handler (&frameIndex, pAddr, cleanFrame) == 0)
       {
         return 0;
       }
     }
-  }
-  // what does this do
-  if (!empty_table_handler (&frameIndex, prevAddr, false))
-  {
-    return 0;
   }
 
   *physicalAddress = frameIndex * PAGE_SIZE + translated[TABLES_DEPTH];
