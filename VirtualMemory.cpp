@@ -5,9 +5,16 @@
 #include <cassert>
 #include <algorithm>
 #include <iostream>
+#include <cmath>
 #include "VirtualMemory.h"
 
-typedef uint64_t addr_t;
+typedef uint64_t address;
+
+typedef struct SwitchFrame {
+	int frameInd;
+	int pageInd;
+	long long parent;
+} SwitchFrame;
 
 enum rw_t
 {
@@ -20,13 +27,13 @@ enum rw_t
  * @param virtualAddress Virtual memory address.
  * @param arr Array of size TABLES_DEPTH + 1 in which the indexes will be stored.
  */
-void translate (addr_t virtualAddress, unsigned int *arr)
+void translate (address virtualAddress, unsigned int *arr)
 {
-  addr_t exponent = TABLES_DEPTH * OFFSET_WIDTH;
-  addr_t divider = 1LL << exponent;
+  address exponent = TABLES_DEPTH * OFFSET_WIDTH;
+  address divider = 1LL << exponent;
   for (int i = 0; i < TABLES_DEPTH + 1; ++i)
   {
-    addr_t remainder = virtualAddress % divider;
+    address remainder = virtualAddress % divider;
     arr[i] = virtualAddress / divider;
     virtualAddress = remainder;
     divider = divider >> OFFSET_WIDTH;
@@ -41,10 +48,10 @@ void translate (addr_t virtualAddress, unsigned int *arr)
 bool is_frame_empty (int frameIndex)
 {
   int value;
-  addr_t frameAddr = frameIndex * PAGE_SIZE;
+  address frameAddr = frameIndex * PAGE_SIZE;
   for (int i = 0; i < PAGE_SIZE; i++)
   {
-    PMread (frameAddr + i, &value);
+    PMread (reinterpret_cast<uint64_t>(frameAddr + i), &value);
     if (value)
     {
       return false;
@@ -55,7 +62,7 @@ bool is_frame_empty (int frameIndex)
 
 void empty_frame (int frameIndex)
 {
-  addr_t frameAddr = frameIndex * PAGE_SIZE;
+  address frameAddr = frameIndex * PAGE_SIZE;
   for (int i = 0; i < PAGE_SIZE; i++)
   {
     PMwrite (frameAddr + i, 0);
@@ -79,7 +86,7 @@ int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
   int maxFrame = startFrame;
   int nextFrame, res;
   bool empty = true;
-  addr_t frameAddr = startFrame * PAGE_SIZE;
+  address frameAddr = startFrame * PAGE_SIZE;
   // Check entire frame
   for (int i = 0; i < PAGE_SIZE; ++i)
   {
@@ -113,15 +120,96 @@ int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
   return maxFrame;
 }
 
-int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
+int convert(long long n) {
+  int dec = 0, i = 0, rem;
+
+  while (n!=0) {
+	  rem = n % 10;
+	  n /= 10;
+	  dec += rem * pow(2, i);
+	  ++i;
+	}
+
+  return dec;
+}
+
+
+long long calculatePage(long long  page, int i) {
+
+}
+
+
+void maxPageNumber(int level, int  page_swapped_in,int page, word_t
+frame ,SwitchFrame *
+frameToP) {
+  if (level == TABLES_DEPTH) {
+	  int p =  page * pow (2, level);
+	  frameToP[frame].pageInd = page;
+	  frameToP[frame].frameInd = frame;
+  } else {
+    for (int i =0; i < PAGE_SIZE; i++) {
+		word_t newFrame;
+		PMread ( frame * PAGE_SIZE + i, &newFrame);
+		frameToP[i].parent = frame * PAGE_SIZE + i;
+		if (newFrame != 0) {
+			maxPageNumber( ++level, page_swapped_in, calculatePage(page, i),
+						   newFrame ,frameToP);
+		}
+    }
+  }
+}
+
+
+bool inPrevFrames(unsigned int
+			   *frames, int frame) {
+  for (int i =0; i < TABLES_DEPTH; i++) {
+    if (frames[i] == frame) {
+		return true;
+    }
+  }
+  return false;
+}
+void find_frame_to_switch(SwitchFrame *newFrame, int page_swapped_in,
+						 unsigned int* frames) {
+  SwitchFrame frameToPage[NUM_FRAMES];
+  for (int i = 1; i < NUM_FRAMES; i++) {
+	  frameToPage[i].pageInd = -1;
+  }
+  maxPageNumber(0, page_swapped_in, 0, 0 , frameToPage);
+  int maxFrame ;
+  int maxPage = -1;
+  for (int i = 1; i < NUM_FRAMES; i++) {
+	  int p = frameToPage[i].pageInd;
+	  bool isBigger = std::min ((long long) std::abs (p - page_swapped_in),NUM_PAGES -
+																		   std::abs (p -
+																					 page_swapped_in)) > maxPage;
+	  if (isBigger && !inPrevFrames(frames, i)) {
+		  maxFrame = i;
+		  maxPage = p;
+	  }
+
+	}
+
+  newFrame->frameInd = maxFrame;
+  newFrame->pageInd = maxPage;
+  newFrame->parent = frameToPage[maxFrame].parent;
+
+}
+
+
+void empty_table_handler (int *addr, address pAddr, bool cleanFrame, unsigned
+int * frames, unsigned int page_swapped_in)
 {
   int newFrame;
   int res = find_empty_frame ((int) (pAddr / PAGE_SIZE), 0, 0, &newFrame);
   if (newFrame == NUM_FRAMES)
   {
-    //find_frame_to_switch (&newFrame);
-    //switch_frames (&newFrame);
-    return 0;
+    SwitchFrame switch_frame;
+    find_frame_to_switch (&switch_frame, page_swapped_in, frames);
+
+	PMevict(switch_frame.frameInd, switch_frame.pageInd);
+	PMrestore(switch_frame.frameInd, page_swapped_in);
+	PMwrite (switch_frame.parent, switch_frame.frameInd);
   }
   else if (res != -1 && cleanFrame)
   {
@@ -131,7 +219,11 @@ int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
 
   PMwrite (pAddr, newFrame);
   *addr = newFrame;
-  return 1;
+}
+
+unsigned int get_page_number(address virtualAddress, int level)
+{
+
 }
 
 /**
@@ -142,29 +234,36 @@ int empty_table_handler (int *addr, addr_t pAddr, bool cleanFrame)
  * @param pageAddress
  * @return 0 if fails, 1 else
  */
-int get_physical_address (addr_t virtualAddress, addr_t *physicalAddress, rw_t mode)
+int get_physical_address (address virtualAddress, address *physicalAddress, rw_t mode)
 {
   unsigned int translated[TABLES_DEPTH + 1];
+  unsigned int frames[TABLES_DEPTH];
+
   translate (virtualAddress, translated);
   for (auto i: translated)
   {
     std::cout << i << " ";
   }
   std::cout << std::endl;
-  addr_t pAddr;
+
+  address pAddr;
   int frameIndex = 0;
   for (int i = 0; i < TABLES_DEPTH; i++)
   {
     pAddr = frameIndex * PAGE_SIZE + translated[i];
     PMread (pAddr, &frameIndex);
+
     if (frameIndex == 0)
     {
       bool cleanFrame = i < TABLES_DEPTH - 1;
-      if (empty_table_handler (&frameIndex, pAddr, cleanFrame) == 0)
-      {
-        return 0;
+      try {
+		  empty_table_handler (&frameIndex, pAddr, cleanFrame, frames,
+							   get_page_number (virtualAddress, i);
+      } catch (std::exception &e) {
+		  return 0;
       }
     }
+	frames[i] = frameIndex;
     std::cout << frameIndex << " ";
   }
   std::cout << std::endl;
@@ -188,11 +287,11 @@ void VMinitialize ()
  * returns 0 on failure (if the address cannot be mapped to a physical
  * address for any reason)
  */
-int VMread (addr_t virtualAddress, word_t *value)
+int VMread (address virtualAddress, word_t *value)
 {
   try
   {
-    addr_t physicalAddress;
+    address physicalAddress;
     assert(get_physical_address (virtualAddress, &physicalAddress, READ));
     PMread (physicalAddress, value);
   }
@@ -211,11 +310,11 @@ int VMread (addr_t virtualAddress, word_t *value)
  * returns 0 on failure (if the address cannot be mapped to a physical
  * address for any reason)
  */
-int VMwrite (addr_t virtualAddress, word_t value)
+int VMwrite (address virtualAddress, word_t value)
 {
   try
   {
-    addr_t physicalAddress;
+    address physicalAddress;
     assert(get_physical_address (virtualAddress, &physicalAddress, WRITE));
     PMwrite (physicalAddress, value);
   }
