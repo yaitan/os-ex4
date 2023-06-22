@@ -12,8 +12,8 @@ typedef uint64_t address;
 
 typedef struct SwitchFrame {
 	int frameInd;
-	int pageInd;
-	long long parent;
+	int pageInd = -1;
+	address parent;
 } SwitchFrame;
 
 enum rw_t
@@ -22,6 +22,26 @@ enum rw_t
     WRITE
 };
 
+void print_ram(word_t *value)
+{
+  printf("your RAM is: \n");
+  for (int i = 0; i < 16; ++i)
+	{
+	  printf("%d, ", int(value[i]));
+	}
+  printf("\n....\n");
+}
+
+
+void check_ram ()
+{
+  word_t value[16];
+  for (int i = 0; i < 16; ++i)
+	{
+	  PMread (i, value + i);
+	}
+	print_ram(value);
+}
 /**
  * Translates a virtual memory address into an array of page indexes.
  * @param virtualAddress Virtual memory address.
@@ -40,27 +60,7 @@ void translate (address virtualAddress, unsigned int *arr)
   }
 }
 
-/**
- * Checks if the given frame is an empty table.
- * @param frameIndex Index of desired frame.
- * @return true if the frame is an empty table (all 0), false otherwise.
- */
-bool is_frame_empty (int frameIndex)
-{
-  int value;
-  address frameAddr = frameIndex * PAGE_SIZE;
-  for (int i = 0; i < PAGE_SIZE; i++)
-  {
-    PMread (reinterpret_cast<uint64_t>(frameAddr + i), &value);
-    if (value)
-    {
-      return false;
-    }
-  }
-  return true;
-}
-
-void empty_frame (int frameIndex)
+void empty_frame (word_t frameIndex)
 {
   address frameAddr = frameIndex * PAGE_SIZE;
   for (int i = 0; i < PAGE_SIZE; i++)
@@ -99,10 +99,13 @@ int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
     if (layer < TABLES_DEPTH - 1) // all frames are pointing to tables
     {
       res = find_empty_frame (callFrame, nextFrame, layer + 1, newFrame);
+      if (res == -2) {
+		  return -2;
+      }
       if (res == -1)
       {
         PMwrite (frameAddr + i, 0);
-        return -1;
+        return -2;
       }
       maxFrame = std::max (maxFrame, res); // res >= nextFrame
     }
@@ -120,40 +123,26 @@ int find_empty_frame (int callFrame, int startFrame, int layer, int *newFrame)
   return maxFrame;
 }
 
-int convert(long long n) {
-  int dec = 0, i = 0, rem;
-
-  while (n!=0) {
-	  rem = n % 10;
-	  n /= 10;
-	  dec += rem * pow(2, i);
-	  ++i;
-	}
-
-  return dec;
-}
-
-
-long long calculatePage(long long  page, int i) {
+int calculatePage(int page, int i, int level) {
+  return page + i * pow(2, OFFSET_WIDTH * level);
 
 }
-
 
 void maxPageNumber(int level, int  page_swapped_in,int page, word_t
-frame ,SwitchFrame *
+frame, address  parent,SwitchFrame *
 frameToP) {
   if (level == TABLES_DEPTH) {
-	  int p =  page * pow (2, level);
 	  frameToP[frame].pageInd = page;
 	  frameToP[frame].frameInd = frame;
+	  frameToP[frame].parent = parent;
   } else {
     for (int i =0; i < PAGE_SIZE; i++) {
 		word_t newFrame;
 		PMread ( frame * PAGE_SIZE + i, &newFrame);
-		frameToP[i].parent = frame * PAGE_SIZE + i;
 		if (newFrame != 0) {
-			maxPageNumber( ++level, page_swapped_in, calculatePage(page, i),
-						   newFrame ,frameToP);
+			maxPageNumber( level +1, page_swapped_in, calculatePage(page, i,
+														 level),
+						   newFrame, frame * PAGE_SIZE + i ,frameToP);
 		}
     }
   }
@@ -172,10 +161,7 @@ bool inPrevFrames(unsigned int
 void find_frame_to_switch(SwitchFrame *newFrame, int page_swapped_in,
 						 unsigned int* frames) {
   SwitchFrame frameToPage[NUM_FRAMES];
-  for (int i = 1; i < NUM_FRAMES; i++) {
-	  frameToPage[i].pageInd = -1;
-  }
-  maxPageNumber(0, page_swapped_in, 0, 0 , frameToPage);
+  maxPageNumber(0, page_swapped_in, 0, 0, 0, frameToPage);
   int maxFrame ;
   int maxPage = -1;
   for (int i = 1; i < NUM_FRAMES; i++) {
@@ -206,12 +192,15 @@ int * frames, unsigned int page_swapped_in)
   {
     SwitchFrame switch_frame;
     find_frame_to_switch (&switch_frame, page_swapped_in, frames);
-
 	PMevict(switch_frame.frameInd, switch_frame.pageInd);
-	PMrestore(switch_frame.frameInd, page_swapped_in);
-	PMwrite (switch_frame.parent, switch_frame.frameInd);
+	PMwrite (switch_frame.parent, 0);
+	if (!cleanFrame) {
+	  PMrestore(switch_frame.frameInd, page_swapped_in);
+	}
+	newFrame = switch_frame.frameInd;
   }
-  else if (res != -1 && cleanFrame)
+
+  if (res != -1 && cleanFrame)
   {
     empty_frame (newFrame);
   }
@@ -221,10 +210,6 @@ int * frames, unsigned int page_swapped_in)
   *addr = newFrame;
 }
 
-unsigned int get_page_number(address virtualAddress, int level)
-{
-
-}
 
 /**
  * function extract from the page Table tree the physical address of the given
@@ -242,10 +227,9 @@ int get_physical_address (address virtualAddress, address *physicalAddress, rw_t
   translate (virtualAddress, translated);
   for (auto i: translated)
   {
-    std::cout << i << " ";
+//    std::cout << i << " ";
   }
-  std::cout << std::endl;
-
+//  std::cout << std::endl;
   address pAddr;
   int frameIndex = 0;
   for (int i = 0; i < TABLES_DEPTH; i++)
@@ -258,15 +242,14 @@ int get_physical_address (address virtualAddress, address *physicalAddress, rw_t
       bool cleanFrame = i < TABLES_DEPTH - 1;
       try {
 		  empty_table_handler (&frameIndex, pAddr, cleanFrame, frames,
-							   get_page_number (virtualAddress, i);
+							   virtualAddress / PAGE_SIZE);
       } catch (std::exception &e) {
 		  return 0;
       }
     }
 	frames[i] = frameIndex;
-    std::cout << frameIndex << " ";
+	check_ram ();
   }
-  std::cout << std::endl;
   *physicalAddress = frameIndex * PAGE_SIZE + translated[TABLES_DEPTH];
   return 1;
 }
@@ -291,6 +274,7 @@ int VMread (address virtualAddress, word_t *value)
 {
   try
   {
+    assert(virtualAddress < VIRTUAL_MEMORY_SIZE );
     address physicalAddress;
     assert(get_physical_address (virtualAddress, &physicalAddress, READ));
     PMread (physicalAddress, value);
@@ -314,7 +298,8 @@ int VMwrite (address virtualAddress, word_t value)
 {
   try
   {
-    address physicalAddress;
+	assert(virtualAddress < VIRTUAL_MEMORY_SIZE );
+	address physicalAddress;
     assert(get_physical_address (virtualAddress, &physicalAddress, WRITE));
     PMwrite (physicalAddress, value);
   }
